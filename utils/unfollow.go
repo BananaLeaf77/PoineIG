@@ -3,57 +3,33 @@ package utils
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"os"
-	"os/exec"
 	"time"
 
 	"github.com/chromedp/chromedp"
 )
 
-func LaunchBrave() error {
-	// Kill any existing Brave instances first
-	exec.Command("pkill", "-f", "brave").Run()
-	time.Sleep(2 * time.Second) // wait for it to fully die
-
-	userDataDir := os.ExpandEnv("$HOME/.config/BraveSoftware/Brave-Browser")
-	fmt.Println("🚀 Launching Brave...")
-
-	brave := exec.Command("brave",
-		"--remote-debugging-port=9222",
-		"--user-data-dir="+userDataDir,
-		"--no-first-run",
-		"--no-default-browser-check",
-	)
-	brave.Stdout = os.Stdout
-	brave.Stderr = os.Stderr
-
-	if err := brave.Start(); err != nil {
-		return fmt.Errorf("failed to launch Brave: %v", err)
-	}
-
-	return WaitForBrave()
+type UnfollowStats struct {
+	Total     int
+	Success   int
+	Skipped   int
+	Failed    int
+	StartTime time.Time
 }
 
-func WaitForBrave() error {
-	fmt.Println("⏳ Waiting for Brave to be ready...")
-	client := &http.Client{Timeout: time.Second}
-
-	for i := 0; i < 30; i++ { // try for 30 seconds
-		resp, err := client.Get("http://127.0.0.1:9222/json/version")
-		if err == nil {
-			resp.Body.Close()
-			fmt.Println("✓ Brave is ready!")
-			return nil
-		}
-		time.Sleep(time.Second)
-		fmt.Printf("\r⏳ Waiting... %ds", i+1)
-	}
-	return fmt.Errorf("brave didn't start within 30 seconds")
+func (s *UnfollowStats) Print() {
+	elapsed := time.Since(s.StartTime).Round(time.Second)
+	fmt.Printf("\n╭─────────────────────────────╮\n")
+	fmt.Printf("│         Final Report        │\n")
+	fmt.Printf("├─────────────────────────────┤\n")
+	fmt.Printf("│  ✓ Unfollowed : %-4d        │\n", s.Success)
+	fmt.Printf("│  ⚠ Skipped   : %-4d        │\n", s.Skipped)
+	fmt.Printf("│  ✗ Failed    : %-4d        │\n", s.Failed)
+	fmt.Printf("│  ⏱ Duration  : %-12s │\n", elapsed)
+	fmt.Printf("╰─────────────────────────────╯\n")
 }
 
-func UnfollowUser(ctx context.Context, username string, pageLoad, actionDelay time.Duration) error {
-	fmt.Printf("\nUnfollowing %s...\n", username)
+func UnfollowUser(ctx context.Context, username string, pageLoad, actionDelay time.Duration, stats *UnfollowStats) error {
+	Logger.Infof("[%d/%d] Unfollowing %s...", stats.Success+stats.Skipped+stats.Failed+1, stats.Total, username)
 
 	userCtx, cancel := context.WithTimeout(ctx, pageLoad*5)
 	defer cancel()
@@ -62,6 +38,7 @@ func UnfollowUser(ctx context.Context, username string, pageLoad, actionDelay ti
 		chromedp.Navigate("https://www.instagram.com/"+username+"/"),
 		chromedp.Sleep(pageLoad),
 	); err != nil {
+		stats.Failed++
 		return fmt.Errorf("navigation failed: %v", err)
 	}
 
@@ -71,7 +48,8 @@ func UnfollowUser(ctx context.Context, username string, pageLoad, actionDelay ti
     `, &pageUnavailable))
 
 	if pageUnavailable {
-		fmt.Printf("⚠ Skipping %s (page unavailable)\n", username)
+		Logger.Warnf("Skipping %s — page unavailable or deleted", username)
+		stats.Skipped++
 		return nil
 	}
 
@@ -79,6 +57,7 @@ func UnfollowUser(ctx context.Context, username string, pageLoad, actionDelay ti
 		chromedp.WaitVisible(`button`, chromedp.ByQuery),
 		chromedp.Sleep(actionDelay),
 	); err != nil {
+		stats.Failed++
 		return fmt.Errorf("buttons never appeared: %v", err)
 	}
 
@@ -91,7 +70,8 @@ func UnfollowUser(ctx context.Context, username string, pageLoad, actionDelay ti
     `, &found))
 
 	if !found {
-		fmt.Printf("⚠ Skipping %s (no Following button)\n", username)
+		Logger.Warnf("Skipping %s — no Following button (private or already unfollowed)", username)
+		stats.Skipped++
 		return nil
 	}
 
@@ -115,10 +95,12 @@ func UnfollowUser(ctx context.Context, username string, pageLoad, actionDelay ti
             })()
         `, &found),
 	); err != nil || !found {
+		stats.Failed++
 		return fmt.Errorf("unfollow confirm not found")
 	}
 
 	chromedp.Run(userCtx, chromedp.Sleep(actionDelay))
-	fmt.Printf("✓ Unfollowed %s\n", username)
+	stats.Success++
+	Logger.Infof("✓ Unfollowed %s [✓%d ⚠%d ✗%d]", username, stats.Success, stats.Skipped, stats.Failed)
 	return nil
 }

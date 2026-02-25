@@ -53,12 +53,19 @@ func main() {
 
 	time.Sleep(2 * time.Second)
 
+	stats := &utils.UnfollowStats{
+		Total:     len(usernames),
+		StartTime: time.Now(),
+	}
+
 	for _, username := range usernames {
-		if err := utils.UnfollowUser(ctx, username, pageLoad, actionDelay); err != nil {
-			fmt.Printf("✗ Failed %s: %v\n", username, err)
+		if err := utils.UnfollowUser(ctx, username, pageLoad, actionDelay, stats); err != nil {
+			utils.Logger.Errorf("Failed %s: %v", username, err)
 		}
 		time.Sleep(betweenUsers)
 	}
+
+	stats.Print()
 
 	fmt.Println("\nDone!")
 }
